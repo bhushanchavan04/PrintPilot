@@ -1,3 +1,4 @@
-apps/print-connector
-apps/tablet-receiver
-docker
+tools/
+docker/
+.storage/
+*.log

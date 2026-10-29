@@ -38,6 +38,7 @@ ENV/
 .env.test.local
 .env.production.local
 apps/**/.env
+tools/**/.env
 packages/**/.env
 !*.env.example
 
