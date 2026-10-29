@@ -1,0 +1,5 @@
+# MyPrint Tablet Receiver – Python dependencies
+# All stdlib; no extra packages needed for the basic receiver.
+# Optional: install qrcode to print a QR in the terminal
+# qrcode[pil]>=7.4
+

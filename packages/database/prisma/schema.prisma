@@ -1,0 +1,542 @@
+// This is your Prisma schema file for MyPrint - Print Shop Automation Platform
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  SHOP_OWNER
+  SHOP_STAFF
+}
+
+enum OrderStatus {
+  UPLOADED
+  AWAITING_PAYMENT
+  PAYMENT_CONFIRMED
+  AWAITING_APPROVAL
+  QUEUED
+  PRINTING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUND_PENDING
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  INITIATED
+  SUCCESS
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentMethod {
+  UPI
+  CARD
+  NET_BANKING
+  CASH
+  MOCK
+}
+
+enum PrintJobStatus {
+  PENDING
+  DOWNLOADING
+  DOWNLOADED
+  SUBMITTED_TO_QUEUE
+  PRINTING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ColorMode {
+  BLACK_AND_WHITE
+  COLOR
+}
+
+enum PrintSides {
+  SINGLE
+  DOUBLE
+}
+
+enum Orientation {
+  PORTRAIT
+  LANDSCAPE
+}
+
+enum PaperSize {
+  A4
+  A3
+  A5
+  LETTER
+  LEGAL
+}
+
+enum FileFormat {
+  PDF
+  DOC
+  DOCX
+  JPG
+  JPEG
+  PNG
+}
+
+enum SubscriptionPlan {
+  TRIAL
+  STARTER_MONTHLY
+  PRO_MONTHLY
+  PRO_YEARLY
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+enum AuditAction {
+  USER_LOGIN
+  USER_LOGOUT
+  SHOP_CREATED
+  SHOP_UPDATED
+  ORDER_CREATED
+  ORDER_STATUS_CHANGED
+  PAYMENT_INITIATED
+  PAYMENT_VERIFIED
+  FILE_UPLOADED
+  FILE_DELETED
+  PRINT_JOB_SUBMITTED
+  PRINT_JOB_COMPLETED
+  PRINT_JOB_FAILED
+  QR_CODE_REGENERATED
+  PRICING_UPDATED
+  PRINTER_ADDED
+  CONNECTOR_CONNECTED
+  CONNECTOR_DISCONNECTED
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+}
+
+// ─────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          UserRole  @default(SHOP_OWNER)
+  emailVerified Boolean   @default(false)
+  phone         String?
+  avatarUrl     String?
+  isActive      Boolean   @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  ownedShops  Shop[]       @relation("ShopOwner")
+  memberships ShopMember[]
+  auditLogs   AuditLog[]
+
+  @@index([email])
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// SHOPS
+// ─────────────────────────────────────────────
+
+model Shop {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  slug        String   @unique
+  description String?
+  logoUrl     String?
+  address     String?
+  city        String?
+  state       String?
+  pincode     String?
+  phone       String?
+  email       String?
+  website     String?
+
+  // QR Code
+  qrCode      String   @unique @default(cuid())
+  qrCodeUrl   String?
+
+  // Settings
+  isActive          Boolean  @default(true)
+  autoprint         Boolean  @default(false)
+  requireApproval   Boolean  @default(true)
+  maxFileSize       Int      @default(50) // MB
+  allowedFormats    String[] @default(["PDF", "JPG", "JPEG", "PNG"])
+  documentRetention Int      @default(24) // hours
+
+  // Direct Customer Payment settings (Customer -> Shopkeeper, 0% commission)
+  upiId               String?  // e.g. "sharma.print@okaxis"
+  upiName             String?  // Payee name shown to customer
+  acceptCashAtCounter Boolean  @default(true)
+
+  // Operating hours (JSON)
+  operatingHours Json?
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  owner        User           @relation("ShopOwner", fields: [ownerId], references: [id])
+  members      ShopMember[]
+  printers     Printer[]
+  pricingRules PricingRule[]
+  orders       Order[]
+  auditLogs    AuditLog[]
+  subscription Subscription?
+
+  @@index([ownerId])
+  @@index([slug])
+  @@index([qrCode])
+  @@map("shops")
+}
+
+model ShopMember {
+  id        String   @id @default(cuid())
+  shopId    String
+  userId    String
+  role      UserRole @default(SHOP_STAFF)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, userId])
+  @@index([shopId])
+  @@index([userId])
+  @@map("shop_members")
+}
+
+// ─────────────────────────────────────────────
+// PRINTERS
+// ─────────────────────────────────────────────
+
+model Printer {
+  id          String  @id @default(cuid())
+  shopId      String
+  name        String
+  systemName  String // OS-level printer name
+  description String?
+  isDefault   Boolean @default(false)
+  isActive    Boolean @default(true)
+  isOnline    Boolean @default(false)
+
+  // Capabilities
+  supportsColor  Boolean     @default(false)
+  supportsDuplex Boolean     @default(false)
+  paperSizes     PaperSize[] @default([A4])
+
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  shop      Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  printJobs PrintJob[]
+
+  @@index([shopId])
+  @@map("printers")
+}
+
+// ─────────────────────────────────────────────
+// PRICING RULES
+// ─────────────────────────────────────────────
+
+model PricingRule {
+  id        String     @id @default(cuid())
+  shopId    String
+  name      String
+  paperSize PaperSize  @default(A4)
+  colorMode ColorMode  @default(BLACK_AND_WHITE)
+  sides     PrintSides @default(SINGLE)
+  pricePerPage Float   // in INR (paise not used for simplicity)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, paperSize, colorMode, sides])
+  @@index([shopId])
+  @@map("pricing_rules")
+}
+
+// ─────────────────────────────────────────────
+// ORDERS
+// ─────────────────────────────────────────────
+
+model Order {
+  id              String      @id @default(cuid())
+  shopId          String
+  orderNumber     String      @unique
+  status          OrderStatus @default(UPLOADED)
+
+  // Customer info (anonymous)
+  customerName    String?
+  customerPhone   String?
+  customerEmail   String?
+
+  // Totals
+  totalPages      Int         @default(0)
+  totalAmount     Float       @default(0) // INR
+  platformFee     Float       @default(0) // INR
+
+  // Notes
+  notes           String?
+  rejectionReason String?
+
+  // Timestamps
+  confirmedAt  DateTime?
+  printedAt    DateTime?
+  completedAt  DateTime?
+  cancelledAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  shop         Shop          @relation(fields: [shopId], references: [id])
+  orderFiles   OrderFile[]
+  printJobs    PrintJob[]
+  payment      Payment?
+  auditLogs    AuditLog[]
+
+  @@index([shopId])
+  @@index([status])
+  @@index([orderNumber])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderFile {
+  id           String     @id @default(cuid())
+  orderId      String?    // Nullable: set to null during upload session, assigned when order is confirmed
+  sessionId    String?    // Temp session token used before order is created
+  originalName String
+  storedName   String
+  storageKey   String     // S3/MinIO object key
+  mimeType     String
+  format       FileFormat
+  sizeBytes    Int
+  pageCount    Int        @default(0)
+  isConverted  Boolean    @default(false)
+  convertedKey String?    // Key for print-ready PDF
+
+  // Print settings for this file
+  printSettings PrintSettings?
+
+  // Price for this file
+  fileAmount    Float      @default(0)
+
+  // Status
+  isDeleted     Boolean    @default(false)
+  deletedAt     DateTime?
+
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([storageKey])
+  @@map("order_files")
+}
+
+model PrintSettings {
+  id          String     @id @default(cuid())
+  orderFileId String     @unique
+  colorMode   ColorMode  @default(BLACK_AND_WHITE)
+  sides       PrintSides @default(SINGLE)
+  paperSize   PaperSize  @default(A4)
+  orientation Orientation @default(PORTRAIT)
+  copies      Int        @default(1)
+  pageRange   String?    // e.g. "1-5,8,10-12" null = all pages
+  pagesCount  Int        @default(0) // effective pages to print (after range)
+  pricePerPage Float     @default(2)
+  totalAmount Float      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderFile OrderFile @relation(fields: [orderFileId], references: [id], onDelete: Cascade)
+
+  @@map("print_settings")
+}
+
+// ─────────────────────────────────────────────
+// PRINT JOBS (local connector jobs)
+// ─────────────────────────────────────────────
+
+model PrintJob {
+  id          String         @id @default(cuid())
+  orderId     String
+  printerId   String?
+  status      PrintJobStatus @default(PENDING)
+  idempotencyKey String      @unique @default(cuid())
+
+  // Job details
+  documentUrl  String?       // Signed URL for download
+  documentKey  String?       // Storage key
+  attempts     Int           @default(0)
+  maxAttempts  Int           @default(3)
+  lastError    String?
+  connectorId  String?       // Which connector handled this
+
+  // Timestamps
+  assignedAt   DateTime?
+  downloadedAt DateTime?
+  submittedAt  DateTime?
+  completedAt  DateTime?
+  failedAt     DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  order   Order    @relation(fields: [orderId], references: [id])
+  printer Printer? @relation(fields: [printerId], references: [id])
+
+  @@index([orderId])
+  @@index([status])
+  @@index([idempotencyKey])
+  @@map("print_jobs")
+}
+
+// ─────────────────────────────────────────────
+// PAYMENTS
+// ─────────────────────────────────────────────
+
+model Payment {
+  id              String        @id @default(cuid())
+  orderId         String        @unique
+  method          PaymentMethod @default(MOCK)
+  status          PaymentStatus @default(PENDING)
+  amount          Float         // INR
+  currency        String        @default("INR")
+
+  // Gateway fields
+  gatewayOrderId    String?   // Razorpay order ID
+  gatewayPaymentId  String?   // Razorpay payment ID
+  gatewaySignature  String?   // Razorpay signature
+  gatewayResponse   Json?     // Full gateway response
+
+  // Webhook
+  webhookVerified   Boolean   @default(false)
+  webhookReceivedAt DateTime?
+
+  // Mock mode
+  isMockPayment   Boolean   @default(false)
+
+  failureReason   String?
+  initiatedAt     DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  order   Order    @relation(fields: [orderId], references: [id])
+  refunds Refund[]
+
+  @@index([orderId])
+  @@index([gatewayOrderId])
+  @@index([gatewayPaymentId])
+  @@map("payments")
+}
+
+model Refund {
+  id              String        @id @default(cuid())
+  paymentId       String
+  amount          Float         // INR
+  status          PaymentStatus @default(PENDING)
+  reason          String?
+  gatewayRefundId String?
+  processedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOGS
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  shopId    String?
+  userId    String?
+  orderId   String?
+  action    AuditAction
+  details   Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+
+  shop  Shop?  @relation(fields: [shopId], references: [id])
+  user  User?  @relation(fields: [userId], references: [id])
+  order Order? @relation(fields: [orderId], references: [id])
+
+  @@index([shopId])
+  @@index([userId])
+  @@index([orderId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────
+// SUBSCRIPTIONS (SaaS Platform Billing)
+// ─────────────────────────────────────────────
+
+model Subscription {
+  id                    String             @id @default(cuid())
+  shopId                String             @unique
+  plan                  SubscriptionPlan   @default(TRIAL)
+  status                SubscriptionStatus @default(TRIALING)
+  amount                Float              @default(0) // in INR
+  currentPeriodStart    DateTime           @default(now())
+  currentPeriodEnd      DateTime
+  cancelAtPeriodEnd     Boolean            @default(false)
+
+  // SaaS payment gateway fields (Shopkeeper paying platform)
+  gatewaySubscriptionId String?
+  gatewayPaymentId      String?
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  shop                  Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+
